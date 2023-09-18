@@ -5,14 +5,13 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/pprokopowicz/greenlight/internal/data"
-	"github.com/pprokopowicz/greenlight/internal/jsonlog"
 )
 
 const version = "1.0.0"
@@ -24,13 +23,13 @@ type config struct {
 		dsn          string
 		maxOpenConns int
 		maxIdleConns int
-		maxIdleTime  string
+		maxIdleTime  time.Duration
 	}
 }
 
 type application struct {
 	config config
-	logger *jsonlog.Logger
+	logger *slog.Logger
 	models data.Models
 }
 
@@ -44,20 +43,21 @@ func main() {
 
 	flag.IntVar(&cfg.db.maxOpenConns, "db-max-open-conns", 25, "PostgreSQL max open connections")
 	flag.IntVar(&cfg.db.maxIdleConns, "db-max-idle-conns", 25, "PostgreSQL max idle connections")
-	flag.StringVar(&cfg.db.maxIdleTime, "db-max-idle-time", "15m", "PostgreSQL max connection idle time")
+	flag.DurationVar(&cfg.db.maxIdleTime, "db-max-idle-time", 15*time.Minute, "PostgreSQL max connection idle time")
 
 	flag.Parse()
 
-	logger := jsonlog.New(os.Stdout, jsonlog.LevelInfo)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	db, err := openDB(cfg)
 	if err != nil {
-		logger.PrintFatal(err, nil)
+		logger.Error(err.Error())
+		os.Exit(1)
 	}
 
 	defer db.Close()
 
-	logger.PrintInfo("database connection pool established", nil)
+	logger.Info("database connection pool established")
 
 	app := &application{
 		config: cfg,
@@ -68,18 +68,17 @@ func main() {
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.port),
 		Handler:      app.routes(),
-		ErrorLog:     log.New(logger, "", 0),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
+		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 
-	logger.PrintInfo("starting server", map[string]string{
-		"addr": srv.Addr,
-		"env":  cfg.env,
-	})
+	logger.Info("starting server", "addr", srv.Addr, "env", cfg.env)
+
 	err = srv.ListenAndServe()
-	logger.PrintFatal(err, nil)
+	logger.Error(err.Error())
+	os.Exit(1)
 }
 
 func openDB(cfg config) (*sql.DB, error) {
@@ -90,13 +89,7 @@ func openDB(cfg config) (*sql.DB, error) {
 
 	db.SetMaxOpenConns(cfg.db.maxOpenConns)
 	db.SetMaxIdleConns(cfg.db.maxIdleConns)
-
-	duration, err := time.ParseDuration(cfg.db.maxIdleTime)
-	if err != nil {
-		return nil, err
-	}
-
-	db.SetConnMaxIdleTime(duration)
+	db.SetConnMaxIdleTime(cfg.db.maxIdleTime)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
