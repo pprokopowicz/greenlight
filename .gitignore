@@ -25,3 +25,6 @@ go.work
 
 # Compiled binary
 bin/
+
+# dot files
+.envrc
